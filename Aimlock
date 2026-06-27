@@ -1,7 +1,6 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local GuiService = game:GetService("GuiService")
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
@@ -20,12 +19,14 @@ local Settings = {
     ShowTeammates = false,
     IgnoreTeammates = false,
     IgnoreWalls = false,
-    AimPart = "Head", -- "Head" or "Body"
+    AimPart = "Head",
     FOVRadius = 150,
 }
 
-local FOVCircle
 local Target
+local FOVCircle
+local FOVLabel
+local ESPObjects = {}
 
 local function IsAlive(character)
     if not character then return false end
@@ -115,30 +116,51 @@ ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 ScreenGui.ResetOnSpawn = false
 
 local Menu = Instance.new("Frame")
-Menu.Size = UDim2.new(0, 280, 0, 400)
-Menu.Position = UDim2.new(0.5, -140, 0.5, -200)
+Menu.Size = UDim2.new(0, 280, 0, 420)
+Menu.Position = UDim2.new(0.5, -140, 0.5, -210)
 Menu.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 Menu.BackgroundTransparency = 0.1
 Menu.BorderSizePixel = 0
 Menu.Active = true
 Menu.Parent = ScreenGui
 
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(0, 8)
-Corner.Parent = Menu
+local MenuCorner = Instance.new("UICorner")
+MenuCorner.CornerRadius = UDim.new(0, 8)
+MenuCorner.Parent = Menu
 
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, 0, 0, 30)
-Title.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-Title.Text = "AIM MENU"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.TextSize = 18
-Title.Font = Enum.Font.GothamBold
-Title.Parent = Menu
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 30)
+TitleBar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+TitleBar.Parent = Menu
 
 local TitleCorner = Instance.new("UICorner")
 TitleCorner.CornerRadius = UDim.new(0, 8)
-TitleCorner.Parent = Title
+TitleCorner.Parent = TitleBar
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, -60, 1, 0)
+TitleLabel.Position = UDim2.new(0, 10, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "AIM MENU"
+TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleLabel.TextSize = 18
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = TitleBar
+
+local ToggleMenuBtn = Instance.new("TextButton")
+ToggleMenuBtn.Size = UDim2.new(0, 30, 0, 30)
+ToggleMenuBtn.Position = UDim2.new(1, -60, 0, 0)
+ToggleMenuBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+ToggleMenuBtn.Text = "_"
+ToggleMenuBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleMenuBtn.TextSize = 18
+ToggleMenuBtn.Font = Enum.Font.GothamBold
+ToggleMenuBtn.Parent = TitleBar
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 8)
+ToggleCorner.Parent = ToggleMenuBtn
 
 local CloseBtn = Instance.new("TextButton")
 CloseBtn.Size = UDim2.new(0, 30, 0, 30)
@@ -148,7 +170,7 @@ CloseBtn.Text = "X"
 CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 CloseBtn.TextSize = 18
 CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.Parent = Title
+CloseBtn.Parent = TitleBar
 
 local CloseCorner = Instance.new("UICorner")
 CloseCorner.CornerRadius = UDim.new(0, 8)
@@ -271,11 +293,24 @@ end
 UpdateCanvas()
 Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(UpdateCanvas)
 
-CloseBtn.MouseButton1Click:Connect(function()
-    Menu.Visible = not Menu.Visible
+ToggleMenuBtn.MouseButton1Click:Connect(function()
+    MenuOpen = not MenuOpen
+    if MenuOpen then
+        Menu.Size = UDim2.new(0, 280, 0, 420)
+        Scroll.Visible = true
+        ToggleMenuBtn.Text = "_"
+    else
+        Menu.Size = UDim2.new(0, 280, 0, 30)
+        Scroll.Visible = false
+        ToggleMenuBtn.Text = "+"
+    end
 end)
 
-Title.InputBegan:Connect(function(input)
+CloseBtn.MouseButton1Click:Connect(function()
+    Menu.Visible = false
+end)
+
+TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.Touch then
         Dragging = true
         DragStart = input.Position
@@ -283,7 +318,7 @@ Title.InputBegan:Connect(function(input)
     end
 end)
 
-Title.InputEnded:Connect(function(input)
+TitleBar.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.Touch then
         Dragging = false
     end
@@ -305,8 +340,9 @@ FOVCircle = Instance.new("Frame")
 FOVCircle.Size = UDim2.new(0, Settings.FOVRadius * 2, 0, Settings.FOVRadius * 2)
 FOVCircle.Position = UDim2.new(0.5, -Settings.FOVRadius, 0.5, -Settings.FOVRadius)
 FOVCircle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-FOVCircle.BackgroundTransparency = 0.8
-FOVCircle.BorderSizePixel = 0
+FOVCircle.BackgroundTransparency = 0.9
+FOVCircle.BorderSizePixel = 2
+FOVCircle.BorderColor3 = Color3.fromRGB(0, 255, 255)
 FOVCircle.Visible = false
 FOVCircle.Parent = ScreenGui
 
@@ -314,7 +350,31 @@ local FOVCorner = Instance.new("UICorner")
 FOVCorner.CornerRadius = UDim.new(1, 0)
 FOVCorner.Parent = FOVCircle
 
-local ESPObjects = {}
+local FOVGlow = Instance.new("Frame")
+FOVGlow.Size = UDim2.new(1, 10, 1, 10)
+FOVGlow.Position = UDim2.new(0.5, -5, 0.5, -5)
+FOVGlow.AnchorPoint = Vector2.new(0.5, 0.5)
+FOVGlow.BackgroundColor3 = Color3.fromRGB(0, 255, 255)
+FOVGlow.BackgroundTransparency = 0.8
+FOVGlow.BorderSizePixel = 0
+FOVGlow.Visible = false
+FOVGlow.Parent = FOVCircle
+
+local GlowCorner = Instance.new("UICorner")
+GlowCorner.CornerRadius = UDim.new(1, 0)
+GlowCorner.Parent = FOVGlow
+
+FOVLabel = Instance.new("TextLabel")
+FOVLabel.Size = UDim2.new(0, 40, 0, 20)
+FOVLabel.Position = UDim2.new(1, 5, 0.5, -10)
+FOVLabel.BackgroundTransparency = 1
+FOVLabel.Text = tostring(Settings.FOVRadius)
+FOVLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
+FOVLabel.TextSize = 14
+FOVLabel.Font = Enum.Font.GothamBold
+FOVLabel.TextXAlignment = Enum.TextXAlignment.Left
+FOVLabel.Visible = false
+FOVLabel.Parent = FOVCircle
 
 local function UpdateESP()
     for _, obj in pairs(ESPObjects) do
@@ -352,7 +412,11 @@ local function UpdateESP()
         nameLabel.Size = UDim2.new(1, 0, 0, 20)
         nameLabel.BackgroundTransparency = 1
         nameLabel.Text = plr.Name
-        nameLabel.TextColor3 = IsTeammate(plr) and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+        if Settings.ESPTeam and IsTeammate(plr) then
+            nameLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+        else
+            nameLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
+        end
         nameLabel.TextSize = 14
         nameLabel.Font = Enum.Font.GothamBold
         nameLabel.TextXAlignment = Enum.TextXAlignment.Center
@@ -396,6 +460,9 @@ end
 
 RunService.RenderStepped:Connect(function()
     FOVCircle.Visible = Settings.FOV
+    FOVGlow.Visible = Settings.FOV
+    FOVLabel.Visible = Settings.FOV
+    FOVLabel.Text = tostring(Settings.FOVRadius)
 
     if Settings.Aimlock then
         Target = GetClosestTarget()
@@ -427,6 +494,11 @@ RunService.RenderStepped:Connect(function()
 
                 if Settings.ESPName then
                     obj.Name.Visible = true
+                    if Settings.ESPTeam and IsTeammate(plr) then
+                        obj.Name.TextColor3 = Color3.fromRGB(0, 255, 0)
+                    else
+                        obj.Name.TextColor3 = Color3.fromRGB(255, 0, 0)
+                    end
                 else
                     obj.Name.Visible = false
                 end
