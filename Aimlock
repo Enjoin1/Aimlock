@@ -1,762 +1,177 @@
--- PHAN 1: KHAI BAO BIEN VA SETTINGS
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
-local UserInputService = game:GetService("UserInputService")
+-- Script: Cơ chế ngắm tự động (Aim Assist/Aimlock) + Hiển thị FOV Circle UI cho Mobile
+-- Tác giả: Qwen
+-- Mô tả: Cung cấp chức năng ngắm vào nhân vật gần nhất trong tầm nhìn khi nhấn phím và hiển thị vòng tròn FOV bằng UI.
+--       YÊU CẦU: Bạn phải tạo Frame UI hình tròn trong Roblox Studio như mô tả trong comment.
 
-local Settings = {
-    Aimlock = false,
-    FOVCircle = false,
-    FOVRadius = 150,
-    AimSmoothness = 0.7,
-    AimPart = "Head",
-    TargetMode = "ClosestDistance",
-    IgnoreTeammates = false,
-    IgnoreWalls = false,
-    RandomOffset = false,
-    OffsetMax = 0.3,
-    NoRecoil = false,
-    InfiniteAmmo = false,
-    Triggerbot = false,
-    ESP = false,
-    ESPBox = false,
-    ESPName = false,
-    ESPHealth = false,
-    ESPDistance = false,
-    ESPTeam = false,
-    ShowTeammates = false,
+-- // Dịch vụ Roblox
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+-- // Cấu hình (có thể dễ dàng điều chỉnh)
+local CONFIG = {
+    AimKey = Enum.KeyCode.ButtonR2, -- Nút kích hoạt (thường là R2 trên mobile controller)
+    MaxDistance = 300,              -- Khoảng cách tối đa để ngắm (studs)
+    CircleRadius = 0.35,            -- Bán kính vùng FOV (0.0 đến 0.5 tương ứng 0% đến 50% chiều rộng/màn hình)
+    Smoothness = 0.3,               -- Độ mượt của chuyển động ngắm
+    TeamCheck = false,              -- Nếu true, sẽ bỏ qua đồng đội
+    VisibilityCheck = false,        -- Nếu true, sẽ kiểm tra tầm nhìn
+    ShowFOVCircle = true,           -- Nếu true, sẽ hiển thị vòng tròn FOV UI
+    FOVCircleUIName = "AimFOVCircle" -- Tên của Frame UI hình tròn trong PlayerGui/ScreenGui
 }
 
-local MenuOpen = true
-local Target = nil
-local ESPCache = {}
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-ScreenGui.ResetOnSpawn = false
+-- // Tham chiếu đến Frame UI
+local fovCircleUI = nil
 
--- PHAN 2: CAC HAM TIEN ICH
-local function IsAlive(character)
-    if not character then return false end
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    return hrp and humanoid and humanoid.Health > 0
-end
-
-local function IsTeammate(player)
-    if player == LocalPlayer then return false end
-    local myTeam = LocalPlayer.Team
-    local theirTeam = player.Team
-    return myTeam and theirTeam and myTeam == theirTeam
-end
-
-local rayParams = RaycastParams.new()
-rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-rayParams.IgnoreWater = true
-
-local function IsVisible(character)
-    if not character then return false end
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-    local origin = Camera.CFrame.Position
-    local direction = hrp.Position - origin
-    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, character}
-    local result = workspace:Raycast(origin, direction, rayParams)
-    if not result then return true end
-    return result.Instance:IsDescendantOf(character)
-end
-
-local function GetRandomOffset()
-    if not Settings.RandomOffset then return Vector3.new(0,0,0) end
-    return Vector3.new(
-        math.random(-Settings.OffsetMax*10, Settings.OffsetMax*10)/10,
-        math.random(-Settings.OffsetMax*10, Settings.OffsetMax*10)/10,
-        math.random(-Settings.OffsetMax*10, Settings.OffsetMax*10)/10
-    )
-end
-
-local function GetTargets()
-    local targets = {}
-    local center = Camera.ViewportSize / 2
-    local fovRadius = Settings.FOVCircle and Settings.FOVRadius or math.huge
-
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr == LocalPlayer then continue end
-        if Settings.IgnoreTeammates and IsTeammate(plr) then continue end
-        local char = plr.Character
-        if not IsAlive(char) then continue end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp then continue end
-        local targetPos
-        if Settings.AimPart == "Head" then
-            local head = char:FindFirstChild("Head")
-            targetPos = head and head.Position or hrp.Position
+-- // Hàm tìm kiếm Frame UI trong PlayerGui
+local function FindFOVCircleUI()
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    local screenGui = playerGui:FindFirstChildWhichIsA("ScreenGui") -- Hoặc tìm theo tên cụ thể nếu bạn có
+    if screenGui then
+        fovCircleUI = screenGui:WaitForChild(CONFIG.FOVCircleUIName)
+        if fovCircleUI and fovCircleUI:IsA("Frame") then
+            -- Đảm bảo UICorner tồn tại để tạo hình tròn
+            local uiCorner = fovCircleUI:FindFirstChildOfClass("UICorner")
+            if not uiCorner then
+                warn("UI Frame '" .. CONFIG.FOVCircleUIName .. "' không có UICorner. UI có thể không hiển thị tròn.")
+            end
+            -- Ẩn UI theo mặc định
+            fovCircleUI.Visible = false
+            print("Tìm thấy và kết nối với UI '" .. CONFIG.FOVCircleUIName .. "'")
         else
-            targetPos = hrp.Position
+            warn("Không tìm thấy Frame UI tên '" .. CONFIG.FOVCircleUIName .. "' hoặc nó không phải là Frame.")
         end
-        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos)
-        if not onScreen then continue end
-        if not Settings.IgnoreWalls and not IsVisible(char) then continue end
-        local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-        if dist > fovRadius then continue end
-        local humanoid = char:FindFirstChildOfClass("Humanoid")
-        table.insert(targets, {
-            Player = plr,
-            Character = char,
-            Part = targetPos,
-            Distance = (Camera.CFrame.Position - targetPos).Magnitude,
-            HP = humanoid and humanoid.Health or 0,
-            ScreenDist = dist,
-        })
-    end
-
-    if #targets == 0 then return nil end
-    if Settings.TargetMode == "LowestHP" then
-        table.sort(targets, function(a,b) return a.HP < b.HP end)
-    elseif Settings.TargetMode == "HighestHP" then
-        table.sort(targets, function(a,b) return a.HP > b.HP end)
     else
-        table.sort(targets, function(a,b) return a.ScreenDist < b.ScreenDist end)
-    end
-    return targets[1]
-end
-
-local function NoRecoil()
-    local char = LocalPlayer.Character
-    if not char then return end
-    local tool = char:FindFirstChildOfClass("Tool")
-    if not tool then return end
-    for _, v in pairs(tool:GetDescendants()) do
-        if v:IsA("NumberValue") or v:IsA("IntValue") or v:IsA("FloatValue") then
-            local name = v.Name:lower()
-            if name:find("recoil") or name:find("kick") or name:find("shake") or name:find("spread") or name:find("bounce") then
-                v.Value = 0
-            end
-        end
-        if v:IsA("CFrameValue") and v.Name:lower():find("recoil") then
-            v.Value = CFrame.new()
-        end
-        if v:IsA("Vector3Value") and v.Name:lower():find("recoil") then
-            v.Value = Vector3.new(0,0,0)
-        end
+        warn("Không tìm thấy ScreenGui trong PlayerGui.")
     end
 end
 
-local function InfiniteAmmo()
-    local char = LocalPlayer.Character
-    if not char then return end
-    local tool = char:FindFirstChildOfClass("Tool")
-    if not tool then return end
-    for _, v in pairs(tool:GetDescendants()) do
-        if v:IsA("NumberValue") or v:IsA("IntValue") or v:IsA("FloatValue") then
-            local name = v.Name:lower()
-            if name:find("ammo") or name:find("clip") or name:find("mag") or name:find("bullet") or name:find("reserve") or name:find("max") then
-                v.Value = 999
-            end
-        end
-    end
+-- // Hàm cập nhật kích thước của Frame UI FOV dựa trên CircleRadius và ViewportSize
+local function UpdateFOVCircleUISize()
+    if not fovCircleUI then return end
+    local viewportSize = Camera.ViewportSize
+    -- Tính bán kính theo pixel dựa trên CircleRadius
+    local radiusInPixels = (CONFIG.CircleRadius * math.min(viewportSize.X, viewportSize.Y))
+    -- Đặt kích thước của Frame là đường kính
+    fovCircleUI.Size = UDim2.new(0, radiusInPixels * 2, 0, radiusInPixels * 2)
 end
 
-local function Triggerbot()
-    if not Settings.Triggerbot then return end
-    local target = GetTargets()
-    if target then
-        mouse1click()
-    end
-end
+-- // Hàm lấy nhân vật gần nhất trong tầm ngắm (giống như trước)
+local function GetClosestEnemy()
+    local closestPlayer = nil
+    local bestScore = math.huge
 
--- PHAN 3: TAO MENU - SUA LAI HOAN TOAN
-local Menu = Instance.new("Frame")
-Menu.Size = UDim2.new(0, 320, 0, 460)
-Menu.Position = UDim2.new(0.5, -160, 0.5, -230)
-Menu.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-Menu.BackgroundTransparency = 0.08
-Menu.BorderSizePixel = 0
-Menu.Active = true
-Menu.Draggable = true
-Menu.Parent = ScreenGui
-
-local MenuCorner = Instance.new("UICorner")
-MenuCorner.CornerRadius = UDim.new(0, 12)
-MenuCorner.Parent = Menu
-
-local TitleBar = Instance.new("Frame")
-TitleBar.Size = UDim2.new(1, 0, 0, 44)
-TitleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
-TitleBar.BackgroundTransparency = 0.5
-TitleBar.BorderSizePixel = 0
-TitleBar.Parent = Menu
-local TitleCorner = Instance.new("UICorner")
-TitleCorner.CornerRadius = UDim.new(0, 12)
-TitleCorner.Parent = TitleBar
-
-local TitleLabel = Instance.new("TextLabel")
-TitleLabel.Size = UDim2.new(1, -80, 1, 0)
-TitleLabel.Position = UDim2.new(0, 16, 0, 0)
-TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "AIM+ESP"
-TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-TitleLabel.TextSize = 20
-TitleLabel.Font = Enum.Font.GothamBold
-TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
-TitleLabel.Parent = TitleBar
-
-local ToggleMenuBtn = Instance.new("TextButton")
-ToggleMenuBtn.Size = UDim2.new(0, 32, 0, 32)
-ToggleMenuBtn.Position = UDim2.new(1, -72, 0, 6)
-ToggleMenuBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-ToggleMenuBtn.Text = "-"
-ToggleMenuBtn.TextColor3 = Color3.fromRGB(255,255,255)
-ToggleMenuBtn.TextSize = 20
-ToggleMenuBtn.Font = Enum.Font.GothamBold
-ToggleMenuBtn.BorderSizePixel = 0
-ToggleMenuBtn.Parent = TitleBar
-local TBtnCorner = Instance.new("UICorner")
-TBtnCorner.CornerRadius = UDim.new(0, 6)
-TBtnCorner.Parent = ToggleMenuBtn
-
-local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0, 32, 0, 32)
-CloseBtn.Position = UDim2.new(1, -40, 0, 6)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-CloseBtn.Text = "X"
-CloseBtn.TextColor3 = Color3.fromRGB(255,255,255)
-CloseBtn.TextSize = 18
-CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.BorderSizePixel = 0
-CloseBtn.Parent = TitleBar
-local CCorner = Instance.new("UICorner")
-CCorner.CornerRadius = UDim.new(0, 6)
-CCorner.Parent = CloseBtn
-
-local Scroll = Instance.new("ScrollingFrame")
-Scroll.Size = UDim2.new(1, -10, 1, -48)
-Scroll.Position = UDim2.new(0, 5, 0, 44)
-Scroll.BackgroundTransparency = 1
-Scroll.BorderSizePixel = 0
-Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-Scroll.ScrollBarThickness = 4
-Scroll.ScrollBarImageColor3 = Color3.fromRGB(100,100,120)
-Scroll.Parent = Menu
-
-local Layout = Instance.new("UIListLayout")
-Layout.Padding = UDim.new(0, 6)
-Layout.SortOrder = Enum.SortOrder.LayoutOrder
-Layout.Parent = Scroll
-
--- Ham tao category (khung cho tung nhom)
-local function CreateCategory(parent, title)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, 0)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Size = UDim2.new(1, 0, 0, 22)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = title
-    titleLabel.TextColor3 = Color3.fromRGB(180, 180, 220)
-    titleLabel.TextSize = 14
-    titleLabel.Font = Enum.Font.GothamBold
-    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-    titleLabel.Parent = frame
-
-    local line = Instance.new("Frame")
-    line.Size = UDim2.new(1, 0, 0, 1)
-    line.Position = UDim2.new(0, 0, 0, 24)
-    line.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-    line.BorderSizePixel = 0
-    line.Parent = frame
-
-    local container = Instance.new("Frame")
-    container.Size = UDim2.new(1, 0, 0, 0)
-    container.Position = UDim2.new(0, 0, 0, 28)
-    container.BackgroundTransparency = 1
-    container.Parent = frame
-
-    local containerLayout = Instance.new("UIListLayout")
-    containerLayout.Padding = UDim.new(0, 4)
-    containerLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    containerLayout.Parent = container
-
-    return frame, container
-end
-
--- Ham tao toggle (hien dai nhu truoc)
-local function CreateToggle(parent, text, settingKey, default)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, 30)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.6, 0, 1, 0)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(220, 220, 240)
-    label.TextSize = 13
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Font = Enum.Font.Gotham
-    label.Parent = frame
-
-    local bg = Instance.new("Frame")
-    bg.Size = UDim2.new(0, 44, 0, 22)
-    bg.Position = UDim2.new(1, -44, 0, 4)
-    bg.BackgroundColor3 = default and Color3.fromRGB(0, 200, 80) or Color3.fromRGB(60, 60, 80)
-    bg.BorderSizePixel = 0
-    bg.Parent = frame
-    local bgCorner = Instance.new("UICorner")
-    bgCorner.CornerRadius = UDim.new(1, 0)
-    bgCorner.Parent = bg
-
-    local thumb = Instance.new("Frame")
-    thumb.Size = UDim2.new(0, 18, 0, 18)
-    thumb.Position = default and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
-    thumb.BackgroundColor3 = Color3.fromRGB(255,255,255)
-    thumb.BorderSizePixel = 0
-    thumb.Parent = bg
-    local thumbCorner = Instance.new("UICorner")
-    thumbCorner.CornerRadius = UDim.new(1, 0)
-    thumbCorner.Parent = thumb
-
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 1, 0)
-    btn.BackgroundTransparency = 1
-    btn.Text = ""
-    btn.Parent = bg
-
-    Settings[settingKey] = default
-
-    btn.MouseButton1Click:Connect(function()
-        Settings[settingKey] = not Settings[settingKey]
-        bg.BackgroundColor3 = Settings[settingKey] and Color3.fromRGB(0, 200, 80) or Color3.fromRGB(60, 60, 80)
-        thumb.Position = Settings[settingKey] and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
-        if settingKey == "ESP" then UpdateESP() end
-    end)
-
-    return frame
-end
-
-local function CreateSlider(parent, text, settingKey, min, max, default)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, 40)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.55, 0, 0, 20)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(220, 220, 240)
-    label.TextSize = 13
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Font = Enum.Font.Gotham
-    label.Parent = frame
-
-    local valueLabel = Instance.new("TextLabel")
-    valueLabel.Size = UDim2.new(0.35, 0, 0, 20)
-    valueLabel.Position = UDim2.new(0.65, 0, 0, 0)
-    valueLabel.BackgroundTransparency = 1
-    valueLabel.Text = tostring(default)
-    valueLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
-    valueLabel.TextSize = 13
-    valueLabel.Font = Enum.Font.GothamBold
-    valueLabel.TextXAlignment = Enum.TextXAlignment.Right
-    valueLabel.Parent = frame
-
-    local sliderBg = Instance.new("Frame")
-    sliderBg.Size = UDim2.new(1, 0, 0, 4)
-    sliderBg.Position = UDim2.new(0, 0, 0, 26)
-    sliderBg.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-    sliderBg.BorderSizePixel = 0
-    sliderBg.Parent = frame
-    local sliderCorner = Instance.new("UICorner")
-    sliderCorner.CornerRadius = UDim.new(1, 0)
-    sliderCorner.Parent = sliderBg
-
-    local fill = Instance.new("Frame")
-    fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
-    fill.BackgroundColor3 = Color3.fromRGB(0, 200, 255)
-    fill.BorderSizePixel = 0
-    fill.Parent = sliderBg
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(1, 0)
-    fillCorner.Parent = fill
-
-    local dragging = false
-    local function updateSlider(x)
-        local rel = math.clamp((x - sliderBg.AbsolutePosition.X) / sliderBg.AbsoluteSize.X, 0, 1)
-        local val = math.round(min + rel * (max - min))
-        Settings[settingKey] = val
-        valueLabel.Text = tostring(val)
-        fill.Size = UDim2.new(rel, 0, 1, 0)
-    end
-
-    sliderBg.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            updateSlider(input.Position.X)
-        end
-    end)
-
-    sliderBg.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.Touch then
-            updateSlider(input.Position.X)
-        end
-    end)
-
-    return frame
-end
-
-local function CreateDropdown(parent, text, settingKey, options, defaultIndex)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, 30)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.45, 0, 1, 0)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(220, 220, 240)
-    label.TextSize = 13
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Font = Enum.Font.Gotham
-    label.Parent = frame
-
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 120, 1, 0)
-    btn.Position = UDim2.new(1, -120, 0, 0)
-    btn.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
-    btn.Text = options[defaultIndex]
-    btn.TextColor3 = Color3.fromRGB(255,255,255)
-    btn.TextSize = 13
-    btn.Font = Enum.Font.GothamBold
-    btn.BorderSizePixel = 0
-    btn.Parent = frame
-    local btnCorner = Instance.new("UICorner")
-    btnCorner.CornerRadius = UDim.new(0, 6)
-    btnCorner.Parent = btn
-
-    local currentIndex = defaultIndex
-    Settings[settingKey] = options[defaultIndex]
-
-    btn.MouseButton1Click:Connect(function()
-        currentIndex = currentIndex % #options + 1
-        btn.Text = options[currentIndex]
-        Settings[settingKey] = options[currentIndex]
-    end)
-
-    return frame
-end
-
--- Xay dung menu
-local function BuildMenu()
-    local cat1, cont1 = CreateCategory(Scroll, "AIM")
-    CreateToggle(cont1, "Aimlock", "Aimlock", false)
-    CreateToggle(cont1, "FOV Circle", "FOVCircle", false)
-    CreateSlider(cont1, "FOV Radius", "FOVRadius", 50, 300, 150)
-    CreateToggle(cont1, "Triggerbot", "Triggerbot", false)
-    CreateDropdown(cont1, "Target Mode", "TargetMode", {"ClosestDistance", "LowestHP", "HighestHP"}, 1)
-    CreateDropdown(cont1, "Aim Part", "AimPart", {"Head", "Body"}, 1)
-    CreateSlider(cont1, "Smoothness", "AimSmoothness", 1, 10, 7)
-    CreateToggle(cont1, "Random Offset", "RandomOffset", false)
-
-    local cat2, cont2 = CreateCategory(Scroll, "ESP")
-    CreateToggle(cont2, "Enable ESP", "ESP", false)
-    CreateToggle(cont2, "Show Box", "ESPBox", false)
-    CreateToggle(cont2, "Show Name", "ESPName", false)
-    CreateToggle(cont2, "Show Health", "ESPHealth", false)
-    CreateToggle(cont2, "Show Distance", "ESPDistance", false)
-    CreateToggle(cont2, "Team Color", "ESPTeam", false)
-    CreateToggle(cont2, "Show Teammates", "ShowTeammates", false)
-
-    local cat3, cont3 = CreateCategory(Scroll, "MISC")
-    CreateToggle(cont3, "Ignore Teammates", "IgnoreTeammates", false)
-    CreateToggle(cont3, "Ignore Walls", "IgnoreWalls", false)
-    CreateToggle(cont3, "No Recoil", "NoRecoil", false)
-    CreateToggle(cont3, "Infinite Ammo", "InfiniteAmmo", false)
-
-    local function updateHeight()
-        local total = 0
-        for _, child in pairs(Scroll:GetChildren()) do
-            if child:IsA("Frame") then
-                total = total + child.Size.Y.Offset
-            end
-        end
-        Scroll.CanvasSize = UDim2.new(0, 0, 0, total + 30)
-    end
-    Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateHeight)
-    task.wait(0.1)
-    updateHeight()
-end
-BuildMenu()
-
-ToggleMenuBtn.MouseButton1Click:Connect(function()
-    MenuOpen = not MenuOpen
-    if MenuOpen then
-        Menu.Size = UDim2.new(0, 320, 0, 460)
-        Scroll.Visible = true
-        ToggleMenuBtn.Text = "-"
-    else
-        Menu.Size = UDim2.new(0, 320, 0, 44)
-        Scroll.Visible = false
-        ToggleMenuBtn.Text = "+"
-    end
-end)
-CloseBtn.MouseButton1Click:Connect(function() Menu.Visible = false end)
-
--- PHAN 4: FOV CIRCLE
-local FOVCircle = Instance.new("Frame")
-FOVCircle.Size = UDim2.new(0, Settings.FOVRadius*2, 0, Settings.FOVRadius*2)
-FOVCircle.Position = UDim2.new(0.5, -Settings.FOVRadius, 0.5, -Settings.FOVRadius)
-FOVCircle.BackgroundTransparency = 1
-FOVCircle.BorderSizePixel = 3
-FOVCircle.BorderColor3 = Color3.fromRGB(0, 255, 255)
-FOVCircle.Visible = false
-FOVCircle.Parent = ScreenGui
-local FOVCorner = Instance.new("UICorner")
-FOVCorner.CornerRadius = UDim.new(1,0)
-FOVCorner.Parent = FOVCircle
-
-local FOVGlow = Instance.new("Frame")
-FOVGlow.Size = UDim2.new(1,8,1,8)
-FOVGlow.Position = UDim2.new(0.5,-4,0.5,-4)
-FOVGlow.AnchorPoint = Vector2.new(0.5,0.5)
-FOVGlow.BackgroundColor3 = Color3.fromRGB(0,255,255)
-FOVGlow.BackgroundTransparency = 0.8
-FOVGlow.BorderSizePixel = 0
-FOVGlow.Parent = FOVCircle
-local GlowCorner = Instance.new("UICorner")
-GlowCorner.CornerRadius = UDim.new(1,0)
-GlowCorner.Parent = FOVGlow
-
-local FOVLabel = Instance.new("TextLabel")
-FOVLabel.Size = UDim2.new(0,40,0,20)
-FOVLabel.Position = UDim2.new(1,5,0.5,-10)
-FOVLabel.BackgroundTransparency = 1
-FOVLabel.Text = tostring(Settings.FOVRadius)
-FOVLabel.TextColor3 = Color3.fromRGB(0,255,255)
-FOVLabel.TextSize = 14
-FOVLabel.Font = Enum.Font.GothamBold
-FOVLabel.TextXAlignment = Enum.TextXAlignment.Left
-FOVLabel.Parent = FOVCircle
-
--- PHAN 5: ESP SU DUNG DRAWING API
-local hasDrawing = pcall(function() return Drawing end)
-local espObjects = {}
-
-local function CreateESPDrawing(player)
-    if not hasDrawing then return nil end
-    local box = Drawing.new("Square")
-    box.Thickness = 2
-    box.Color = Color3.fromRGB(255,0,0)
-    box.Transparency = 0.5
-    box.Filled = false
-    box.Visible = false
-
-    local nameTag = Drawing.new("Text")
-    nameTag.Text = player.Name
-    nameTag.Color = Color3.fromRGB(255,255,255)
-    nameTag.Size = 14
-    nameTag.Center = true
-    nameTag.Outline = true
-    nameTag.OutlineColor = Color3.fromRGB(0,0,0)
-    nameTag.Visible = false
-
-    local healthBar = Drawing.new("Rectangle")
-    healthBar.Color = Color3.fromRGB(0,255,0)
-    healthBar.Filled = true
-    healthBar.Visible = false
-
-    local distanceText = Drawing.new("Text")
-    distanceText.Color = Color3.fromRGB(200,200,200)
-    distanceText.Size = 12
-    distanceText.Center = true
-    distanceText.Outline = true
-    distanceText.OutlineColor = Color3.fromRGB(0,0,0)
-    distanceText.Visible = false
-
-    return {
-        Box = box,
-        Name = nameTag,
-        Health = healthBar,
-        Distance = distanceText,
-        Player = player
-    }
-end
-
-local function DestroyESPDrawing(esp)
-    if esp then
-        pcall(function()
-            esp.Box:Remove()
-            esp.Name:Remove()
-            esp.Health:Remove()
-            esp.Distance:Remove()
-        end)
-    end
-end
-
--- PHAN 6: UPDATE ESP
-local function UpdateESP()
-    for _, esp in pairs(espObjects) do
-        DestroyESPDrawing(esp)
-    end
-    espObjects = {}
-
-    if not Settings.ESP then return end
-
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr == LocalPlayer then continue end
-        if not Settings.ShowTeammates and IsTeammate(plr) then continue end
-        local esp = CreateESPDrawing(plr)
-        if esp then
-            espObjects[plr] = esp
-        end
-    end
-end
-
--- PHAN 7: VONG LAP CHINH
-RunService.RenderStepped:Connect(function()
-    FOVCircle.Visible = Settings.FOVCircle
-    FOVGlow.Visible = Settings.FOVCircle
-    FOVLabel.Visible = Settings.FOVCircle
-    FOVLabel.Text = tostring(Settings.FOVRadius)
-
-    if Settings.NoRecoil then NoRecoil() end
-    if Settings.InfiniteAmmo then InfiniteAmmo() end
-    if Settings.Triggerbot then Triggerbot() end
-
-    if Settings.Aimlock then
-        local target = GetTargets()
-        if target then
-            local targetPos = target.Part + GetRandomOffset()
-            local camPos = Camera.CFrame.Position
-            Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(camPos, targetPos), Settings.AimSmoothness / 10)
-        end
-    end
-
-    if Settings.ESP and hasDrawing then
-        for _, esp in pairs(espObjects) do
-            local player = esp.Player
-            if not player then
-                esp.Box.Visible = false
-                esp.Name.Visible = false
-                esp.Health.Visible = false
-                esp.Distance.Visible = false
-                continue
-            end
-
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
             local character = player.Character
-            if not IsAlive(character) then
-                esp.Box.Visible = false
-                esp.Name.Visible = false
-                esp.Health.Visible = false
-                esp.Distance.Visible = false
-                continue
-            end
+            if character then
+                local rootPart = character:FindFirstChild("HumanoidRootPart")
+                local humanoid = character:FindFirstChild("Humanoid")
 
-            local hrp = character:FindFirstChild("HumanoidRootPart")
-            if not hrp then
-                esp.Box.Visible = false
-                esp.Name.Visible = false
-                esp.Health.Visible = false
-                esp.Distance.Visible = false
-                continue
-            end
+                if rootPart and humanoid and humanoid.Health > 0 then
+                    if CONFIG.TeamCheck and LocalPlayer.Team and player.Team and LocalPlayer.Team == player.Team then
+                        continue
+                    end
 
-            local screenPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
-            if not onScreen then
-                esp.Box.Visible = false
-                esp.Name.Visible = false
-                esp.Health.Visible = false
-                esp.Distance.Visible = false
-                continue
-            end
+                    local screenPosition, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
 
-            local isTeammate = Settings.ESPTeam and IsTeammate(player)
-            local teamColor = isTeammate and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0)
+                    if onScreen then
+                        local dx = (screenPosition.X / Camera.ViewportSize.X) - 0.5
+                        local dy = (screenPosition.Y / Camera.ViewportSize.Y) - 0.5
+                        local distanceFromCenter = math.sqrt(dx^2 + dy^2)
 
-            local distance = (Camera.CFrame.Position - hrp.Position).Magnitude
-            local size = 150 / distance
-            size = math.clamp(size, 10, 100)
+                        if distanceFromCenter < CONFIG.CircleRadius then
+                            local distance3D = (Camera.CFrame.Position - rootPart.Position).Magnitude
 
-            local topLeft = Vector2.new(screenPos.X - size, screenPos.Y - size * 2)
-            local bottomRight = Vector2.new(screenPos.X + size, screenPos.Y + size * 0.5)
+                            if distance3D <= CONFIG.MaxDistance then
+                                if CONFIG.VisibilityCheck then
+                                    local rayParams = RaycastParams.new()
+                                    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, character}
+                                    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+                                    local rayResult = workspace:Raycast(Camera.CFrame.Position, (rootPart.Position - Camera.CFrame.Position).Unit * distance3D, rayParams)
+                                    if rayResult then
+                                        continue
+                                    end
+                                end
 
-            if Settings.ESPBox then
-                esp.Box.Position = topLeft
-                esp.Box.Size = bottomRight - topLeft
-                esp.Box.Color = teamColor
-                esp.Box.Visible = true
-            else
-                esp.Box.Visible = false
-            end
-
-            if Settings.ESPName then
-                esp.Name.Position = Vector2.new(screenPos.X, topLeft.Y - 20)
-                esp.Name.Text = player.Name
-                esp.Name.Color = teamColor
-                esp.Name.Visible = true
-            else
-                esp.Name.Visible = false
-            end
-
-            if Settings.ESPHealth then
-                local humanoid = character:FindFirstChildOfClass("Humanoid")
-                if humanoid then
-                    local healthPercent = humanoid.Health / humanoid.MaxHealth
-                    local width = (bottomRight.X - topLeft.X) * healthPercent
-                    esp.Health.Position = Vector2.new(topLeft.X, bottomRight.Y + 5)
-                    esp.Health.Size = Vector2.new(width, 6)
-                    esp.Health.Color = Color3.fromRGB(255 - 255 * healthPercent, 255 * healthPercent, 0)
-                    esp.Health.Visible = true
-                else
-                    esp.Health.Visible = false
+                                if distance3D < bestScore then
+                                    bestScore = distance3D
+                                    closestPlayer = rootPart
+                                end
+                            end
+                        end
+                    end
                 end
-            else
-                esp.Health.Visible = false
+            end
+        end
+    end
+
+    return closestPlayer
+end
+
+-- // Hàm di chuyển camera mượt mà về phía mục tiêu (giống như trước)
+local function SmoothAim(target)
+    if not target then return end
+
+    local targetPosition = target.Position
+    local cameraPosition = Camera.CFrame.Position
+    local direction = (targetPosition - cameraPosition).Unit
+    local newCFrame = CFrame.lookAt(cameraPosition, cameraPosition + direction)
+
+    Camera.CFrame = Camera.CFrame:Lerp(newCFrame, CONFIG.Smoothness)
+end
+
+-- // Biến trạng thái và kết nối sự kiện (giống như trước)
+local isAiming = false
+local aimConnection = nil
+
+-- // Khởi tạo: Tìm UI và cập nhật kích thước ban đầu nếu UI tồn tại
+FindFOVCircleUI()
+if fovCircleUI then
+    -- Cập nhật kích thước khi kích thước viewport thay đổi
+    Camera:GetPropertyChangedSignal("ViewportSize"):Connect(UpdateFOVCircleUISize)
+    -- Cập nhật kích thước lần đầu tiên nếu UI được tìm thấy
+    UpdateFOVCircleUISize()
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == CONFIG.AimKey then
+        if not isAiming then
+            isAiming = true
+            if aimConnection then
+                aimConnection:Disconnect()
             end
 
-            if Settings.ESPDistance then
-                esp.Distance.Position = Vector2.new(screenPos.X, bottomRight.Y + 20)
-                esp.Distance.Text = string.format("%.1f m", distance)
-                esp.Distance.Visible = true
-            else
-                esp.Distance.Visible = false
+            -- Hiển thị UI FOV Circle khi bắt đầu aim (nếu UI tồn tại)
+            if CONFIG.ShowFOVCircle and fovCircleUI then
+                fovCircleUI.Visible = true
+                -- Kích thước đã được cập nhật động qua connection ở trên
             end
+
+            aimConnection = RunService.RenderStepped:Connect(function()
+                if not UserInputService:IsKeyDown(CONFIG.AimKey) then
+                    isAiming = false
+                    if aimConnection then
+                        aimConnection:Disconnect()
+                        aimConnection = nil
+                    end
+                    -- Ẩn UI FOV Circle khi ngừng aim (nếu UI tồn tại)
+                    if CONFIG.ShowFOVCircle and fovCircleUI then
+                        fovCircleUI.Visible = false
+                    end
+                    return
+                end
+
+                local target = GetClosestEnemy()
+                if target then
+                    SmoothAim(target)
+                end
+            end)
         end
     end
 end)
 
--- PHAN 8: SU KIEN
-Players.PlayerAdded:Connect(function(player)
-    if player ~= LocalPlayer and Settings.ESP then
-        local esp = CreateESPDrawing(player)
-        if esp then
-            espObjects[player] = esp
-        end
-    end
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-    local esp = espObjects[player]
-    if esp then
-        DestroyESPDrawing(esp)
-        espObjects[player] = nil
-    end
-end)
-
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(0.5)
-    Camera = workspace.CurrentCamera
-    UpdateESP()
-end)
-
-UpdateESP()
+-- print("Aim Assist + FOV UI loaded. Hold " .. tostring(CONFIG.AimKey) .. " to aim and see the FOV circle.")
