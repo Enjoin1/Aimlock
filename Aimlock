@@ -1,5 +1,5 @@
--- === KANHA'S MOBILE AIMLOCK + ESP v2.0 ===
--- Optimized for Delta Executor | Mobile Touch Architecture
+-- === KANHA MOBILE v3.0 PATCHED ===
+-- Fix: Aim Prediction | Draggable Menu | Scroll | Hide Toggle
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -7,92 +7,37 @@ local UserInputService = game:GetService("UserInputService")
 local camera = workspace.CurrentCamera
 local player = Players.LocalPlayer
 
--- === CONFIGURATION ===
+-- === CONFIG ===
 local Config = {
     Aimbot = {
         Enabled = false,
-        HoldToAim = true,      -- true = Hold, false = Tap Lock
+        HoldToAim = true,
         TeamCheck = true,
         WallCheck = true,
-        Smoothness = 0.08,     -- Lower = smoother
-        FOV = 120,             -- Pixel radius
+        Smoothness = 0.12,      -- Base smoothing factor
+        Prediction = 0.165,     -- Velocity prediction multiplier (adjust for ping)
+        FOV = 130,
         TargetPart = "Head"
     },
     ESP = {
         Enabled = true,
         TeamCheck = true,
-        BoxColor = Color3.fromRGB(255, 0, 0),
-        TeamColor = Color3.fromRGB(0, 170, 255),
+        BoxColor = Color3.fromRGB(255, 50, 50),
+        TeamColor = Color3.fromRGB(50, 170, 255),
         TextSize = 14
     }
 }
 
--- === STATE MANAGEMENT ===
 local State = {
     Aiming = false,
     LockedTarget = nil,
-    TouchId = nil -- Track specific touch to prevent multi-touch conflicts
+    MenuVisible = true,
+    Dragging = false,
+    DragStart = Vector2.zero,
+    MenuOffset = Vector2.zero
 }
 
--- === ESP ENGINE (Drawing API) ===
-local ESPCache = {}
-
-local function UpdateESP()
-    if not Config.ESP.Enabled then
-        for _, obj in pairs(ESPCache) do
-            if obj.Box then obj.Box.Visible = false end
-            if obj.Name then obj.Name.Visible = false end
-        end
-        return
-    end
-
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr ~= player and plr.Character then
-            local humanoid = plr.Character:FindFirstChildOfClass("Humanoid")
-            local root = plr.Character:FindFirstChild("HumanoidRootPart")
-            local head = plr.Character:FindFirstChild("Head")
-
-            if humanoid and root and head and humanoid.Health > 0 then
-                local isTeam = Config.ESP.TeamCheck and plr.Team == player.Team
-                local screenPos, onScreen = camera:WorldToViewportPoint(root.Position)
-
-                if not ESPCache[plr.UserId] then
-                    ESPCache[plr.UserId] = {
-                        Box = Drawing.new("Square"),
-                        Name = Drawing.new("Text")
-                    }
-                end
-
-                local cache = ESPCache[plr.UserId]
-                
-                -- Box ESP
-                cache.Box.Visible = onScreen
-                if onScreen then
-                    local size = root.Size
-                    local scale = size.Y / (screenPos.Z * math.tan(math.rad(camera.FieldOfView / 2)) * 2) * camera.ViewportSize.Y
-                    cache.Box.Size = Vector2.new(scale * 0.8, scale * 1.8)
-                    cache.Box.Position = Vector2.new(screenPos.X - cache.Box.Size.X/2, screenPos.Y - cache.Box.Size.Y/2)
-                    cache.Box.Color = isTeam and Config.ESP.TeamColor or Config.ESP.BoxColor
-                    cache.Box.Thickness = 1
-                    cache.Box.Filled = false
-                end
-
-                -- Name ESP
-                cache.Name.Visible = onScreen
-                if onScreen then
-                    cache.Name.Text = plr.Name .. (isTeam and " [TEAM]" or "")
-                    cache.Name.Position = Vector2.new(screenPos.X, screenPos.Y - 30)
-                    cache.Name.Center = true
-                    cache.Name.Outline = true
-                    cache.Name.Size = Config.ESP.TextSize
-                    cache.Name.Color = isTeam and Config.ESP.TeamColor or Config.ESP.BoxColor
-                end
-            end
-        end
-    end
-end
-
--- === AIMBOT LOGIC ===
+-- === AIMBOT ENGINE WITH PREDICTION ===
 local function GetValidTarget()
     local closest, minDist = nil, math.huge
     local center = camera.ViewportSize / 2
@@ -101,10 +46,11 @@ local function GetValidTarget()
         if plr ~= player and plr.Character then
             local part = plr.Character:FindFirstChild(Config.Aimbot.TargetPart)
             local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-            
-            if part and hum and hum.Health > 0 then
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+
+            if part and hum and root and hum.Health > 0 then
                 if Config.Aimbot.TeamCheck and plr.Team == player.Team then continue end
-                
+
                 local pos, visible = camera:WorldToScreenPoint(part.Position)
                 if visible then
                     local dist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
@@ -128,248 +74,285 @@ local function GetValidTarget()
     return closest
 end
 
--- Single Heartbeat Loop (Prevents memory leaks)
-RunService.RenderStepped:Connect(function(dt)
-    UpdateESP()
-    
-    if not Config.Aimbot.Enabled then 
-        State.Aiming = false
-        State.LockedTarget = nil
-        return 
+local function SolveAim(target)
+    local part = target.Character:FindFirstChild(Config.Aimbot.TargetPart)
+    local root = target.Character:FindFirstChild("HumanoidRootPart")
+    if not (part and root) then return nil end
+
+    -- Velocity-based prediction
+    local velocity = root.AssemblyLinearVelocity or Vector3.zero
+    local predictedPos = part.Position + velocity * Config.Aimbot.Prediction
+
+    -- Gravity compensation for head (approximate)
+    if Config.Aimbot.TargetPart == "Head" then
+        predictedPos += Vector3.new(0, workspace.Gravity * Config.Aimbot.Prediction^2 * 0.5, 0)
     end
 
-    -- Determine active target based on mode
-    local target = nil
-    if Config.Aimbot.HoldToAim then
-        target = State.Aiming and GetValidTarget() or nil
-    else
-        if State.LockedTarget then
-            -- Validate locked target still exists
-            local char = State.LockedTarget.Character
-            if char and char:FindFirstChild(Config.Aimbot.TargetPart) then
-                target = State.LockedTarget
-            else
-                State.LockedTarget = nil
+    return CFrame.lookAt(camera.CFrame.Position, predictedPos)
+end
+
+-- === ESP ENGINE ===
+local ESPCache = {}
+local function UpdateESP()
+    if not Config.ESP.Enabled then
+        for _, obj in pairs(ESPCache) do
+            if obj.Box then obj.Box.Visible = false end
+            if obj.Name then obj.Name.Visible = false end
+        end
+        return
+    end
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= player and plr.Character then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hum and root and hum.Health > 0 then
+                local isTeam = Config.ESP.TeamCheck and plr.Team == player.Team
+                local pos, onScreen = camera:WorldToViewportPoint(root.Position)
+                if not ESPCache[plr.UserId] then
+                    ESPCache[plr.UserId] = { Box = Drawing.new("Square"), Name = Drawing.new("Text") }
+                end
+                local c = ESPCache[plr.UserId]
+                c.Box.Visible = onScreen
+                c.Name.Visible = onScreen
+                if onScreen then
+                    local scale = root.Size.Y / (pos.Z * math.tan(math.rad(camera.FieldOfView/2)) * 2) * camera.ViewportSize.Y
+                    c.Box.Size = Vector2.new(scale * 0.8, scale * 1.8)
+                    c.Box.Position = Vector2.new(pos.X - c.Box.Size.X/2, pos.Y - c.Box.Size.Y/2)
+                    c.Box.Color = isTeam and Config.ESP.TeamColor or Config.ESP.BoxColor
+                    c.Box.Thickness = 1; c.Box.Filled = false
+                    c.Name.Text = plr.Name .. (isTeam and " [T]" or "")
+                    c.Name.Position = Vector2.new(pos.X, pos.Y - 28)
+                    c.Name.Center = true; c.Name.Outline = true
+                    c.Name.Size = Config.ESP.TextSize
+                    c.Name.Color = isTeam and Config.ESP.TeamColor or Config.ESP.BoxColor
+                end
             end
         end
     end
+end
 
-    -- Execute aim
+-- === MAIN LOOP ===
+RunService.RenderStepped:Connect(function(dt)
+    UpdateESP()
+    if not Config.Aimbot.Enabled then State.Aiming = false; State.LockedTarget = nil return end
+
+    local target = Config.Aimbot.HoldToAim
+        and (State.Aiming and GetValidTarget() or nil)
+        or (State.LockedTarget and State.LockedTarget.Character and State.LockedTarget.Character:FindFirstChild(Config.Aimbot.TargetPart) and State.LockedTarget or nil)
+
     if target then
-        local part = target.Character:FindFirstChild(Config.Aimbot.TargetPart)
-        if part then
-            local goal = CFrame.lookAt(camera.CFrame.Position, part.Position)
-            -- Frame-rate independent smoothing
-            local alpha = math.clamp(Config.Aimbot.Smoothness * dt * 60, 0, 1)
+        local goal = SolveAim(target)
+        if goal then
+            -- Frame-independent smooth with adaptive clamping
+            local alpha = math.clamp(Config.Aimbot.Smoothness * dt * 60, 0.01, 0.99)
             camera.CFrame = camera.CFrame:Lerp(goal, alpha)
         end
     end
 end)
 
--- === TOUCH INPUT HANDLER ===
-UserInputService.TouchStarted:Connect(function(touch, processed)
-    if processed or not Config.Aimbot.Enabled then return end
-    
-    if Config.Aimbot.HoldToAim then
+-- === TOUCH INPUT ===
+UserInputService.TouchStarted:Connect(function(t, p)
+    if p then return end
+    if Config.Aimbot.Enabled and Config.Aimbot.HoldToAim then
         State.Aiming = true
-        State.TouchId = touch.Position -- Simple ID tracking
-    else
-        -- Tap to lock nearest
+    elseif Config.Aimbot.Enabled and not Config.Aimbot.HoldToAim then
         State.LockedTarget = GetValidTarget()
     end
 end)
-
-UserInputService.TouchEnded:Connect(function(touch, processed)
-    if Config.Aimbot.HoldToAim and State.Aiming then
-        State.Aiming = false
-        State.TouchId = nil
-    end
+UserInputService.TouchEnded:Connect(function()
+    if Config.Aimbot.HoldToAim then State.Aiming = false end
 end)
 
--- === UI CONSTRUCTION (Fixing original bugs) ===
+-- === UI SYSTEM ===
 local gui = Instance.new("ScreenGui")
-gui.Name = "KanhaMobileUI"
-gui.ResetOnSpawn = false
+gui.Name = "KanhaV3"; gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = player:WaitForChild("PlayerGui")
 
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 280, 0, 380)
-MainFrame.Position = UDim2.new(0.5, -140, 0, 80)
-MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-MainFrame.BorderSizePixel = 0
-MainFrame.Parent = gui
+-- Floating Toggle Button
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Size = UDim2.new(0, 50, 0, 50)
+ToggleBtn.Position = UDim2.new(0, 10, 0.5, -25)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 80)
+ToggleBtn.Text = "☰"
+ToggleBtn.TextColor3 = Color3.new(1,1,1)
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.TextSize = 22
+ToggleBtn.AutoButtonColor = false
+ToggleBtn.Parent = gui
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 12)
+Instance.new("UIStroke", ToggleBtn).Color = Color3.fromRGB(0, 170, 255)
 
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(0, 8)
-Corner.Parent = MainFrame
+-- Main Menu Container
+local MenuFrame = Instance.new("Frame")
+MenuFrame.Name = "Menu"
+MenuFrame.Size = UDim2.new(0, 280, 0, 360)
+MenuFrame.Position = UDim2.new(0, 70, 0.5, -180)
+MenuFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+MenuFrame.BorderSizePixel = 0
+MenuFrame.ClipsDescendants = true
+MenuFrame.Parent = gui
+Instance.new("UICorner", MenuFrame).CornerRadius = UDim.new(0, 10)
+local MenuStroke = Instance.new("UIStroke", MenuFrame)
+MenuStroke.Color = Color3.fromRGB(0, 170, 255); MenuStroke.Thickness = 1.5
 
-local Stroke = Instance.new("UIStroke")
-Stroke.Color = Color3.fromRGB(0, 170, 255)
-Stroke.Thickness = 1.5
-Stroke.Parent = MainFrame
+-- Scrolling Content
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Size = UDim2.new(1, 0, 1, -35)
+Scroll.Position = UDim2.new(0, 0, 0, 35)
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 420) -- Adjust based on content height
+Scroll.ScrollBarThickness = 4
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(0, 170, 255)
+Scroll.BackgroundTransparency = 1
+Scroll.Parent = MenuFrame
 
--- Helper function for buttons
-local function CreateToggle(name, yPos, default, callback)
+local Layout = Instance.new("UIListLayout", Scroll)
+Layout.Padding = UDim.new(0, 6)
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+-- Title Bar (Drag Handle)
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 35)
+TitleBar.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+TitleBar.Parent = MenuFrame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
+
+local TitleText = Instance.new("TextLabel")
+TitleText.Text = "KANHA v3.0 ☠️"
+TitleText.Size = UDim2.new(1, -30, 1, 0)
+TitleText.Position = UDim2.new(0, 10, 0, 0)
+TitleText.BackgroundTransparency = 1
+TitleText.TextColor3 = Color3.fromRGB(0, 170, 255)
+TitleText.Font = Enum.Font.GothamBold
+TitleText.TextSize = 15
+TitleText.TextXAlignment = Enum.TextXAlignment.Left
+TitleText.Parent = TitleBar
+
+-- === DRAG LOGIC ===
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch then
+        State.Dragging = true
+        State.DragStart = input.Position
+        State.MenuOffset = MenuFrame.AbsolutePosition
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if State.Dragging and input.UserInputType == Enum.UserInputType.Touch then
+        local delta = input.Position - State.DragStart
+        MenuFrame.Position = UDim2.new(0, State.MenuOffset.X + delta.X, 0, State.MenuOffset.Y + delta.Y)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch then
+        State.Dragging = false
+    end
+end)
+
+-- === TOGGLE MENU VISIBILITY ===
+ToggleBtn.MouseButton1Click:Connect(function()
+    State.MenuVisible = not State.MenuVisible
+    MenuFrame.Visible = State.MenuVisible
+    ToggleBtn.BackgroundColor3 = State.MenuVisible and Color3.fromRGB(0, 140, 80) or Color3.fromRGB(60, 60, 65)
+    ToggleBtn.Text = State.MenuVisible and "✕" or "☰"
+end)
+
+-- === UI BUILDER HELPERS ===
+local order = 0
+local function AddToggle(name, default, callback)
+    order += 1
     local btn = Instance.new("TextButton")
-    btn.Name = name
+    btn.LayoutOrder = order
     btn.Text = name .. ": " .. (default and "ON" or "OFF")
-    btn.Size = UDim2.new(0.9, 0, 0, 36)
-    btn.Position = UDim2.new(0.05, 0, 0, yPos)
-    btn.BackgroundColor3 = default and Color3.fromRGB(0, 140, 80) or Color3.fromRGB(45, 45, 50)
+    btn.Size = UDim2.new(1, -10, 0, 36)
+    btn.BackgroundColor3 = default and Color3.fromRGB(0, 130, 75) or Color3.fromRGB(40, 40, 45)
     btn.TextColor3 = Color3.new(1,1,1)
-    btn.Font = Enum.Font.GothamMedium
-    btn.TextSize = 14
+    btn.Font = Enum.Font.GothamMedium; btn.TextSize = 13
     btn.AutoButtonColor = false
-    btn.Parent = MainFrame
-    
+    btn.Parent = Scroll
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    
     btn.MouseButton1Click:Connect(function()
-        local newVal = not callback()
-        btn.Text = name .. ": " .. (newVal and "ON" or "OFF")
-        btn.BackgroundColor3 = newVal and Color3.fromRGB(0, 140, 80) or Color3.fromRGB(45, 45, 50)
-        callback(newVal)
+        local nv = not callback()
+        btn.Text = name .. ": " .. (nv and "ON" or "OFF")
+        btn.BackgroundColor3 = nv and Color3.fromRGB(0, 130, 75) or Color3.fromRGB(40, 40, 45)
+        callback(nv)
     end)
-    
     return btn
 end
 
--- Title
-local Title = Instance.new("TextLabel")
-Title.Text = "KANHA MOBILE v2.0"
-Title.Size = UDim2.new(1, 0, 0, 30)
-Title.BackgroundTransparency = 1
-Title.TextColor3 = Color3.fromRGB(0, 170, 255)
-Title.Font = Enum.Font.GothamBold
-Title.TextSize = 16
-Title.Parent = MainFrame
+local function AddSlider(name, min, max, step, default, callback)
+    order += 1
+    local container = Instance.new("Frame")
+    container.LayoutOrder = order
+    container.Size = UDim2.new(1, -10, 0, 40)
+    container.BackgroundTransparency = 1
+    container.Parent = Scroll
 
--- Toggles
-CreateToggle("Aimbot", 40, Config.Aimbot.Enabled, function(v) 
-    if v ~= nil then Config.Aimbot.Enabled = v end
-    return Config.Aimbot.Enabled 
-end)
+    local label = Instance.new("TextLabel")
+    label.Text = name .. ": " .. string.format("%.3f", default)
+    label.Size = UDim2.new(0.55, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.new(1,1,1)
+    label.Font = Enum.Font.Gotham; label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = container
 
-CreateToggle("ESP", 85, Config.ESP.Enabled, function(v) 
-    if v ~= nil then Config.ESP.Enabled = v end
-    return Config.ESP.Enabled 
-end)
+    local minus = Instance.new("TextButton")
+    minus.Text = "−"; minus.Size = UDim2.new(0, 32, 0, 28)
+    minus.Position = UDim2.new(0.58, 0, 0.5, -14)
+    minus.BackgroundColor3 = Color3.fromRGB(45,45,50)
+    minus.TextColor3 = Color3.new(1,1,1); minus.Font = Enum.Font.GothamBold; minus.TextSize = 16
+    minus.Parent = container
+    Instance.new("UICorner", minus).CornerRadius = UDim.new(0, 4)
 
-CreateToggle("Team Check", 130, Config.Aimbot.TeamCheck, function(v) 
-    if v ~= nil then 
-        Config.Aimbot.TeamCheck = v 
-        Config.ESP.TeamCheck = v
+    local plus = Instance.new("TextButton")
+    plus.Text = "+"; plus.Size = UDim2.new(0, 32, 0, 28)
+    plus.Position = UDim2.new(0.78, 0, 0.5, -14)
+    plus.BackgroundColor3 = Color3.fromRGB(45,45,50)
+    plus.TextColor3 = Color3.new(1,1,1); plus.Font = Enum.Font.GothamBold; plus.TextSize = 16
+    plus.Parent = container
+    Instance.new("UICorner", plus).CornerRadius = UDim.new(0, 4)
+
+    local current = default
+    local update = function(d)
+        current = math.clamp(current + d, min, max)
+        label.Text = name .. ": " .. string.format("%.3f", current)
+        callback(current)
     end
-    return Config.Aimbot.TeamCheck 
-end)
+    minus.MouseButton1Click:Connect(function() update(-step) end)
+    plus.MouseButton1Click:Connect(function() update(step) end)
+end
 
-CreateToggle("Wall Check", 175, Config.Aimbot.WallCheck, function(v) 
-    if v ~= nil then Config.Aimbot.WallCheck = v end
-    return Config.Aimbot.WallCheck 
-end)
+-- Spacer
+local function AddSpacer(h)
+    order += 1
+    local s = Instance.new("Frame")
+    s.LayoutOrder = order; s.Size = UDim2.new(1, -10, 0, h)
+    s.BackgroundTransparency = 1; s.Parent = Scroll
+end
 
-CreateToggle("Hold Mode", 220, Config.Aimbot.HoldToAim, function(v) 
-    if v ~= nil then Config.Aimbot.HoldToAim = v end
-    return Config.Aimbot.HoldToAim 
-end)
+-- === BUILD MENU CONTENT ===
+AddSpacer(4)
+AddToggle("Aimbot", Config.Aimbot.Enabled, function(v) if v~=nil then Config.Aimbot.Enabled=v end return Config.Aimbot.Enabled end)
+AddToggle("Hold Mode", Config.Aimbot.HoldToAim, function(v) if v~=nil then Config.Aimbot.HoldToAim=v end return Config.Aimbot.HoldToAim end)
+AddToggle("Team Check", Config.Aimbot.TeamCheck, function(v) if v~=nil then Config.Aimbot.TeamCheck=v; Config.ESP.TeamCheck=v end return Config.Aimbot.TeamCheck end)
+AddToggle("Wall Check", Config.Aimbot.WallCheck, function(v) if v~=nil then Config.Aimbot.WallCheck=v end return Config.Aimbot.WallCheck end)
+AddSlider("Smoothness", 0.01, 0.5, 0.01, Config.Aimbot.Smoothness, function(v) Config.Aimbot.Smoothness = v end)
+AddSlider("Prediction", 0, 0.5, 0.005, Config.Aimbot.Prediction, function(v) Config.Aimbot.Prediction = v end)
+AddSlider("FOV", 30, 400, 10, Config.Aimbot.FOV, function(v) Config.Aimbot.FOV = v end)
+AddSpacer(6)
+AddToggle("ESP", Config.ESP.Enabled, function(v) if v~=nil then Config.ESP.Enabled=v end return Config.ESP.Enabled end)
+AddSlider("ESP Text Size", 8, 24, 1, Config.ESP.TextSize, function(v) Config.ESP.TextSize = v end)
 
--- Slider: Smoothness
-local SmoothLabel = Instance.new("TextLabel")
-SmoothLabel.Text = "Smooth: " .. Config.Aimbot.Smoothness
-SmoothLabel.Size = UDim2.new(0.6, 0, 0, 25)
-SmoothLabel.Position = UDim2.new(0.05, 0, 0, 270)
-SmoothLabel.BackgroundTransparency = 1
-SmoothLabel.TextColor3 = Color3.new(1,1,1)
-SmoothLabel.Font = Enum.Font.Gotham
-SmoothLabel.TextSize = 13
-SmoothLabel.TextXAlignment = Enum.TextXAlignment.Left
-SmoothLabel.Parent = MainFrame
-
-local SmMinus = Instance.new("TextButton")
-SmMinus.Text = "-"
-SmMinus.Size = UDim2.new(0, 30, 0, 25)
-SmMinus.Position = UDim2.new(0.65, 0, 0, 270)
-SmMinus.BackgroundColor3 = Color3.fromRGB(50,50,55)
-SmMinus.TextColor3 = Color3.new(1,1,1)
-SmMinus.Font = Enum.Font.GothamBold
-SmMinus.TextSize = 14
-SmMinus.Parent = MainFrame
-Instance.new("UICorner", SmMinus).CornerRadius = UDim.new(0,4)
-
-local SmPlus = Instance.new("TextButton")
-SmPlus.Text = "+"
-SmPlus.Size = UDim2.new(0, 30, 0, 25)
-SmPlus.Position = UDim2.new(0.82, 0, 0, 270)
-SmPlus.BackgroundColor3 = Color3.fromRGB(50,50,55)
-SmPlus.TextColor3 = Color3.new(1,1,1)
-SmPlus.Font = Enum.Font.GothamBold
-SmPlus.TextSize = 14
-SmPlus.Parent = MainFrame
-Instance.new("UICorner", SmPlus).CornerRadius = UDim.new(0,4)
-
-SmMinus.MouseButton1Click:Connect(function()
-    Config.Aimbot.Smoothness = math.max(0.01, Config.Aimbot.Smoothness - 0.02)
-    SmoothLabel.Text = string.format("Smooth: %.2f", Config.Aimbot.Smoothness)
-end)
-
-SmPlus.MouseButton1Click:Connect(function()
-    Config.Aimbot.Smoothness = math.min(0.5, Config.Aimbot.Smoothness + 0.02)
-    SmoothLabel.Text = string.format("Smooth: %.2f", Config.Aimbot.Smoothness)
-end)
-
--- Slider: FOV
-local FOVLabel = Instance.new("TextLabel")
-FOVLabel.Text = "FOV: " .. Config.Aimbot.FOV
-FOVLabel.Size = UDim2.new(0.6, 0, 0, 25)
-FOVLabel.Position = UDim2.new(0.05, 0, 0, 305)
-FOVLabel.BackgroundTransparency = 1
-FOVLabel.TextColor3 = Color3.new(1,1,1)
-FOVLabel.Font = Enum.Font.Gotham
-FOVLabel.TextSize = 13
-FOVLabel.TextXAlignment = Enum.TextXAlignment.Left
-FOVLabel.Parent = MainFrame
-
-local FovMinus = Instance.new("TextButton")
-FovMinus.Text = "-"
-FovMinus.Size = UDim2.new(0, 30, 0, 25)
-FovMinus.Position = UDim2.new(0.65, 0, 0, 305)
-FovMinus.BackgroundColor3 = Color3.fromRGB(50,50,55)
-FovMinus.TextColor3 = Color3.new(1,1,1)
-FovMinus.Font = Enum.Font.GothamBold
-FovMinus.TextSize = 14
-FovMinus.Parent = MainFrame
-Instance.new("UICorner", FovMinus).CornerRadius = UDim.new(0,4)
-
-local FovPlus = Instance.new("TextButton")
-FovPlus.Text = "+"
-FovPlus.Size = UDim2.new(0, 30, 0, 25)
-FovPlus.Position = UDim2.new(0.82, 0, 0, 305)
-FovPlus.BackgroundColor3 = Color3.fromRGB(50,50,55)
-FovPlus.TextColor3 = Color3.new(1,1,1)
-FovPlus.Font = Enum.Font.GothamBold
-FovPlus.TextSize = 14
-FovPlus.Parent = MainFrame
-Instance.new("UICorner", FovPlus).CornerRadius = UDim.new(0,4)
-
-FovMinus.MouseButton1Click:Connect(function()
-    Config.Aimbot.FOV = math.max(30, Config.Aimbot.FOV - 10)
-    FOVLabel.Text = "FOV: " .. Config.Aimbot.FOV
-end)
-
-FovPlus.MouseButton1Click:Connect(function()
-    Config.Aimbot.FOV = math.min(400, Config.Aimbot.FOV + 10)
-    FOVLabel.Text = "FOV: " .. Config.Aimbot.FOV
-end)
-
--- Cleanup on remove
-gui.AncestryChanged:Connect(function(_, parent)
-    if not parent then
-        for _, obj in pairs(ESPCache) do
-            if obj.Box then obj.Box:Remove() end
-            if obj.Name then obj.Name:Remove() end
+-- Cleanup
+gui.AncestryChanged:Connect(function(_, p)
+    if not p then
+        for _, o in pairs(ESPCache) do
+            if o.Box then o.Box:Remove() end
+            if o.Name then o.Name:Remove() end
         end
     end
 end)
 
-print("✅ Kanha Mobile v2.0 Loaded | ESP + Aimlock Active")
+print("✅ Kanha v3.0 | Aim+Prediction | Drag | Scroll | Hide")
