@@ -1,177 +1,375 @@
--- Script: Cơ chế ngắm tự động (Aim Assist/Aimlock) + Hiển thị FOV Circle UI cho Mobile
--- Tác giả: Qwen
--- Mô tả: Cung cấp chức năng ngắm vào nhân vật gần nhất trong tầm nhìn khi nhấn phím và hiển thị vòng tròn FOV bằng UI.
---       YÊU CẦU: Bạn phải tạo Frame UI hình tròn trong Roblox Studio như mô tả trong comment.
+-- === KANHA'S MOBILE AIMLOCK + ESP v2.0 ===
+-- Optimized for Delta Executor | Mobile Touch Architecture
 
--- // Dịch vụ Roblox
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local Camera = workspace.CurrentCamera
-local LocalPlayer = Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local camera = workspace.CurrentCamera
+local player = Players.LocalPlayer
 
--- // Cấu hình (có thể dễ dàng điều chỉnh)
-local CONFIG = {
-    AimKey = Enum.KeyCode.ButtonR2, -- Nút kích hoạt (thường là R2 trên mobile controller)
-    MaxDistance = 300,              -- Khoảng cách tối đa để ngắm (studs)
-    CircleRadius = 0.35,            -- Bán kính vùng FOV (0.0 đến 0.5 tương ứng 0% đến 50% chiều rộng/màn hình)
-    Smoothness = 0.3,               -- Độ mượt của chuyển động ngắm
-    TeamCheck = false,              -- Nếu true, sẽ bỏ qua đồng đội
-    VisibilityCheck = false,        -- Nếu true, sẽ kiểm tra tầm nhìn
-    ShowFOVCircle = true,           -- Nếu true, sẽ hiển thị vòng tròn FOV UI
-    FOVCircleUIName = "AimFOVCircle" -- Tên của Frame UI hình tròn trong PlayerGui/ScreenGui
+-- === CONFIGURATION ===
+local Config = {
+    Aimbot = {
+        Enabled = false,
+        HoldToAim = true,      -- true = Hold, false = Tap Lock
+        TeamCheck = true,
+        WallCheck = true,
+        Smoothness = 0.08,     -- Lower = smoother
+        FOV = 120,             -- Pixel radius
+        TargetPart = "Head"
+    },
+    ESP = {
+        Enabled = true,
+        TeamCheck = true,
+        BoxColor = Color3.fromRGB(255, 0, 0),
+        TeamColor = Color3.fromRGB(0, 170, 255),
+        TextSize = 14
+    }
 }
 
--- // Tham chiếu đến Frame UI
-local fovCircleUI = nil
+-- === STATE MANAGEMENT ===
+local State = {
+    Aiming = false,
+    LockedTarget = nil,
+    TouchId = nil -- Track specific touch to prevent multi-touch conflicts
+}
 
--- // Hàm tìm kiếm Frame UI trong PlayerGui
-local function FindFOVCircleUI()
-    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-    local screenGui = playerGui:FindFirstChildWhichIsA("ScreenGui") -- Hoặc tìm theo tên cụ thể nếu bạn có
-    if screenGui then
-        fovCircleUI = screenGui:WaitForChild(CONFIG.FOVCircleUIName)
-        if fovCircleUI and fovCircleUI:IsA("Frame") then
-            -- Đảm bảo UICorner tồn tại để tạo hình tròn
-            local uiCorner = fovCircleUI:FindFirstChildOfClass("UICorner")
-            if not uiCorner then
-                warn("UI Frame '" .. CONFIG.FOVCircleUIName .. "' không có UICorner. UI có thể không hiển thị tròn.")
-            end
-            -- Ẩn UI theo mặc định
-            fovCircleUI.Visible = false
-            print("Tìm thấy và kết nối với UI '" .. CONFIG.FOVCircleUIName .. "'")
-        else
-            warn("Không tìm thấy Frame UI tên '" .. CONFIG.FOVCircleUIName .. "' hoặc nó không phải là Frame.")
+-- === ESP ENGINE (Drawing API) ===
+local ESPCache = {}
+
+local function UpdateESP()
+    if not Config.ESP.Enabled then
+        for _, obj in pairs(ESPCache) do
+            if obj.Box then obj.Box.Visible = false end
+            if obj.Name then obj.Name.Visible = false end
         end
-    else
-        warn("Không tìm thấy ScreenGui trong PlayerGui.")
+        return
+    end
+
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= player and plr.Character then
+            local humanoid = plr.Character:FindFirstChildOfClass("Humanoid")
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            local head = plr.Character:FindFirstChild("Head")
+
+            if humanoid and root and head and humanoid.Health > 0 then
+                local isTeam = Config.ESP.TeamCheck and plr.Team == player.Team
+                local screenPos, onScreen = camera:WorldToViewportPoint(root.Position)
+
+                if not ESPCache[plr.UserId] then
+                    ESPCache[plr.UserId] = {
+                        Box = Drawing.new("Square"),
+                        Name = Drawing.new("Text")
+                    }
+                end
+
+                local cache = ESPCache[plr.UserId]
+                
+                -- Box ESP
+                cache.Box.Visible = onScreen
+                if onScreen then
+                    local size = root.Size
+                    local scale = size.Y / (screenPos.Z * math.tan(math.rad(camera.FieldOfView / 2)) * 2) * camera.ViewportSize.Y
+                    cache.Box.Size = Vector2.new(scale * 0.8, scale * 1.8)
+                    cache.Box.Position = Vector2.new(screenPos.X - cache.Box.Size.X/2, screenPos.Y - cache.Box.Size.Y/2)
+                    cache.Box.Color = isTeam and Config.ESP.TeamColor or Config.ESP.BoxColor
+                    cache.Box.Thickness = 1
+                    cache.Box.Filled = false
+                end
+
+                -- Name ESP
+                cache.Name.Visible = onScreen
+                if onScreen then
+                    cache.Name.Text = plr.Name .. (isTeam and " [TEAM]" or "")
+                    cache.Name.Position = Vector2.new(screenPos.X, screenPos.Y - 30)
+                    cache.Name.Center = true
+                    cache.Name.Outline = true
+                    cache.Name.Size = Config.ESP.TextSize
+                    cache.Name.Color = isTeam and Config.ESP.TeamColor or Config.ESP.BoxColor
+                end
+            end
+        end
     end
 end
 
--- // Hàm cập nhật kích thước của Frame UI FOV dựa trên CircleRadius và ViewportSize
-local function UpdateFOVCircleUISize()
-    if not fovCircleUI then return end
-    local viewportSize = Camera.ViewportSize
-    -- Tính bán kính theo pixel dựa trên CircleRadius
-    local radiusInPixels = (CONFIG.CircleRadius * math.min(viewportSize.X, viewportSize.Y))
-    -- Đặt kích thước của Frame là đường kính
-    fovCircleUI.Size = UDim2.new(0, radiusInPixels * 2, 0, radiusInPixels * 2)
-end
+-- === AIMBOT LOGIC ===
+local function GetValidTarget()
+    local closest, minDist = nil, math.huge
+    local center = camera.ViewportSize / 2
 
--- // Hàm lấy nhân vật gần nhất trong tầm ngắm (giống như trước)
-local function GetClosestEnemy()
-    local closestPlayer = nil
-    local bestScore = math.huge
-
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            local character = player.Character
-            if character then
-                local rootPart = character:FindFirstChild("HumanoidRootPart")
-                local humanoid = character:FindFirstChild("Humanoid")
-
-                if rootPart and humanoid and humanoid.Health > 0 then
-                    if CONFIG.TeamCheck and LocalPlayer.Team and player.Team and LocalPlayer.Team == player.Team then
-                        continue
-                    end
-
-                    local screenPosition, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
-
-                    if onScreen then
-                        local dx = (screenPosition.X / Camera.ViewportSize.X) - 0.5
-                        local dy = (screenPosition.Y / Camera.ViewportSize.Y) - 0.5
-                        local distanceFromCenter = math.sqrt(dx^2 + dy^2)
-
-                        if distanceFromCenter < CONFIG.CircleRadius then
-                            local distance3D = (Camera.CFrame.Position - rootPart.Position).Magnitude
-
-                            if distance3D <= CONFIG.MaxDistance then
-                                if CONFIG.VisibilityCheck then
-                                    local rayParams = RaycastParams.new()
-                                    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, character}
-                                    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-                                    local rayResult = workspace:Raycast(Camera.CFrame.Position, (rootPart.Position - Camera.CFrame.Position).Unit * distance3D, rayParams)
-                                    if rayResult then
-                                        continue
-                                    end
-                                end
-
-                                if distance3D < bestScore then
-                                    bestScore = distance3D
-                                    closestPlayer = rootPart
-                                end
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= player and plr.Character then
+            local part = plr.Character:FindFirstChild(Config.Aimbot.TargetPart)
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            
+            if part and hum and hum.Health > 0 then
+                if Config.Aimbot.TeamCheck and plr.Team == player.Team then continue end
+                
+                local pos, visible = camera:WorldToScreenPoint(part.Position)
+                if visible then
+                    local dist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+                    if dist <= Config.Aimbot.FOV and dist < minDist then
+                        if Config.Aimbot.WallCheck then
+                            local params = RaycastParams.new()
+                            params.FilterDescendantsInstances = {player.Character}
+                            params.FilterType = Enum.RaycastFilterType.Exclude
+                            local ray = workspace:Raycast(camera.CFrame.Position, (part.Position - camera.CFrame.Position).Unit * 1000, params)
+                            if ray and ray.Instance:FindFirstAncestor(plr.Name) then
+                                closest, minDist = plr, dist
                             end
+                        else
+                            closest, minDist = plr, dist
                         end
                     end
                 end
             end
         end
     end
-
-    return closestPlayer
+    return closest
 end
 
--- // Hàm di chuyển camera mượt mà về phía mục tiêu (giống như trước)
-local function SmoothAim(target)
-    if not target then return end
+-- Single Heartbeat Loop (Prevents memory leaks)
+RunService.RenderStepped:Connect(function(dt)
+    UpdateESP()
+    
+    if not Config.Aimbot.Enabled then 
+        State.Aiming = false
+        State.LockedTarget = nil
+        return 
+    end
 
-    local targetPosition = target.Position
-    local cameraPosition = Camera.CFrame.Position
-    local direction = (targetPosition - cameraPosition).Unit
-    local newCFrame = CFrame.lookAt(cameraPosition, cameraPosition + direction)
-
-    Camera.CFrame = Camera.CFrame:Lerp(newCFrame, CONFIG.Smoothness)
-end
-
--- // Biến trạng thái và kết nối sự kiện (giống như trước)
-local isAiming = false
-local aimConnection = nil
-
--- // Khởi tạo: Tìm UI và cập nhật kích thước ban đầu nếu UI tồn tại
-FindFOVCircleUI()
-if fovCircleUI then
-    -- Cập nhật kích thước khi kích thước viewport thay đổi
-    Camera:GetPropertyChangedSignal("ViewportSize"):Connect(UpdateFOVCircleUISize)
-    -- Cập nhật kích thước lần đầu tiên nếu UI được tìm thấy
-    UpdateFOVCircleUISize()
-end
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if input.KeyCode == CONFIG.AimKey then
-        if not isAiming then
-            isAiming = true
-            if aimConnection then
-                aimConnection:Disconnect()
+    -- Determine active target based on mode
+    local target = nil
+    if Config.Aimbot.HoldToAim then
+        target = State.Aiming and GetValidTarget() or nil
+    else
+        if State.LockedTarget then
+            -- Validate locked target still exists
+            local char = State.LockedTarget.Character
+            if char and char:FindFirstChild(Config.Aimbot.TargetPart) then
+                target = State.LockedTarget
+            else
+                State.LockedTarget = nil
             end
+        end
+    end
 
-            -- Hiển thị UI FOV Circle khi bắt đầu aim (nếu UI tồn tại)
-            if CONFIG.ShowFOVCircle and fovCircleUI then
-                fovCircleUI.Visible = true
-                -- Kích thước đã được cập nhật động qua connection ở trên
-            end
-
-            aimConnection = RunService.RenderStepped:Connect(function()
-                if not UserInputService:IsKeyDown(CONFIG.AimKey) then
-                    isAiming = false
-                    if aimConnection then
-                        aimConnection:Disconnect()
-                        aimConnection = nil
-                    end
-                    -- Ẩn UI FOV Circle khi ngừng aim (nếu UI tồn tại)
-                    if CONFIG.ShowFOVCircle and fovCircleUI then
-                        fovCircleUI.Visible = false
-                    end
-                    return
-                end
-
-                local target = GetClosestEnemy()
-                if target then
-                    SmoothAim(target)
-                end
-            end)
+    -- Execute aim
+    if target then
+        local part = target.Character:FindFirstChild(Config.Aimbot.TargetPart)
+        if part then
+            local goal = CFrame.lookAt(camera.CFrame.Position, part.Position)
+            -- Frame-rate independent smoothing
+            local alpha = math.clamp(Config.Aimbot.Smoothness * dt * 60, 0, 1)
+            camera.CFrame = camera.CFrame:Lerp(goal, alpha)
         end
     end
 end)
 
--- print("Aim Assist + FOV UI loaded. Hold " .. tostring(CONFIG.AimKey) .. " to aim and see the FOV circle.")
+-- === TOUCH INPUT HANDLER ===
+UserInputService.TouchStarted:Connect(function(touch, processed)
+    if processed or not Config.Aimbot.Enabled then return end
+    
+    if Config.Aimbot.HoldToAim then
+        State.Aiming = true
+        State.TouchId = touch.Position -- Simple ID tracking
+    else
+        -- Tap to lock nearest
+        State.LockedTarget = GetValidTarget()
+    end
+end)
+
+UserInputService.TouchEnded:Connect(function(touch, processed)
+    if Config.Aimbot.HoldToAim and State.Aiming then
+        State.Aiming = false
+        State.TouchId = nil
+    end
+end)
+
+-- === UI CONSTRUCTION (Fixing original bugs) ===
+local gui = Instance.new("ScreenGui")
+gui.Name = "KanhaMobileUI"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 280, 0, 380)
+MainFrame.Position = UDim2.new(0.5, -140, 0, 80)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = gui
+
+local Corner = Instance.new("UICorner")
+Corner.CornerRadius = UDim.new(0, 8)
+Corner.Parent = MainFrame
+
+local Stroke = Instance.new("UIStroke")
+Stroke.Color = Color3.fromRGB(0, 170, 255)
+Stroke.Thickness = 1.5
+Stroke.Parent = MainFrame
+
+-- Helper function for buttons
+local function CreateToggle(name, yPos, default, callback)
+    local btn = Instance.new("TextButton")
+    btn.Name = name
+    btn.Text = name .. ": " .. (default and "ON" or "OFF")
+    btn.Size = UDim2.new(0.9, 0, 0, 36)
+    btn.Position = UDim2.new(0.05, 0, 0, yPos)
+    btn.BackgroundColor3 = default and Color3.fromRGB(0, 140, 80) or Color3.fromRGB(45, 45, 50)
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 14
+    btn.AutoButtonColor = false
+    btn.Parent = MainFrame
+    
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    
+    btn.MouseButton1Click:Connect(function()
+        local newVal = not callback()
+        btn.Text = name .. ": " .. (newVal and "ON" or "OFF")
+        btn.BackgroundColor3 = newVal and Color3.fromRGB(0, 140, 80) or Color3.fromRGB(45, 45, 50)
+        callback(newVal)
+    end)
+    
+    return btn
+end
+
+-- Title
+local Title = Instance.new("TextLabel")
+Title.Text = "KANHA MOBILE v2.0"
+Title.Size = UDim2.new(1, 0, 0, 30)
+Title.BackgroundTransparency = 1
+Title.TextColor3 = Color3.fromRGB(0, 170, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 16
+Title.Parent = MainFrame
+
+-- Toggles
+CreateToggle("Aimbot", 40, Config.Aimbot.Enabled, function(v) 
+    if v ~= nil then Config.Aimbot.Enabled = v end
+    return Config.Aimbot.Enabled 
+end)
+
+CreateToggle("ESP", 85, Config.ESP.Enabled, function(v) 
+    if v ~= nil then Config.ESP.Enabled = v end
+    return Config.ESP.Enabled 
+end)
+
+CreateToggle("Team Check", 130, Config.Aimbot.TeamCheck, function(v) 
+    if v ~= nil then 
+        Config.Aimbot.TeamCheck = v 
+        Config.ESP.TeamCheck = v
+    end
+    return Config.Aimbot.TeamCheck 
+end)
+
+CreateToggle("Wall Check", 175, Config.Aimbot.WallCheck, function(v) 
+    if v ~= nil then Config.Aimbot.WallCheck = v end
+    return Config.Aimbot.WallCheck 
+end)
+
+CreateToggle("Hold Mode", 220, Config.Aimbot.HoldToAim, function(v) 
+    if v ~= nil then Config.Aimbot.HoldToAim = v end
+    return Config.Aimbot.HoldToAim 
+end)
+
+-- Slider: Smoothness
+local SmoothLabel = Instance.new("TextLabel")
+SmoothLabel.Text = "Smooth: " .. Config.Aimbot.Smoothness
+SmoothLabel.Size = UDim2.new(0.6, 0, 0, 25)
+SmoothLabel.Position = UDim2.new(0.05, 0, 0, 270)
+SmoothLabel.BackgroundTransparency = 1
+SmoothLabel.TextColor3 = Color3.new(1,1,1)
+SmoothLabel.Font = Enum.Font.Gotham
+SmoothLabel.TextSize = 13
+SmoothLabel.TextXAlignment = Enum.TextXAlignment.Left
+SmoothLabel.Parent = MainFrame
+
+local SmMinus = Instance.new("TextButton")
+SmMinus.Text = "-"
+SmMinus.Size = UDim2.new(0, 30, 0, 25)
+SmMinus.Position = UDim2.new(0.65, 0, 0, 270)
+SmMinus.BackgroundColor3 = Color3.fromRGB(50,50,55)
+SmMinus.TextColor3 = Color3.new(1,1,1)
+SmMinus.Font = Enum.Font.GothamBold
+SmMinus.TextSize = 14
+SmMinus.Parent = MainFrame
+Instance.new("UICorner", SmMinus).CornerRadius = UDim.new(0,4)
+
+local SmPlus = Instance.new("TextButton")
+SmPlus.Text = "+"
+SmPlus.Size = UDim2.new(0, 30, 0, 25)
+SmPlus.Position = UDim2.new(0.82, 0, 0, 270)
+SmPlus.BackgroundColor3 = Color3.fromRGB(50,50,55)
+SmPlus.TextColor3 = Color3.new(1,1,1)
+SmPlus.Font = Enum.Font.GothamBold
+SmPlus.TextSize = 14
+SmPlus.Parent = MainFrame
+Instance.new("UICorner", SmPlus).CornerRadius = UDim.new(0,4)
+
+SmMinus.MouseButton1Click:Connect(function()
+    Config.Aimbot.Smoothness = math.max(0.01, Config.Aimbot.Smoothness - 0.02)
+    SmoothLabel.Text = string.format("Smooth: %.2f", Config.Aimbot.Smoothness)
+end)
+
+SmPlus.MouseButton1Click:Connect(function()
+    Config.Aimbot.Smoothness = math.min(0.5, Config.Aimbot.Smoothness + 0.02)
+    SmoothLabel.Text = string.format("Smooth: %.2f", Config.Aimbot.Smoothness)
+end)
+
+-- Slider: FOV
+local FOVLabel = Instance.new("TextLabel")
+FOVLabel.Text = "FOV: " .. Config.Aimbot.FOV
+FOVLabel.Size = UDim2.new(0.6, 0, 0, 25)
+FOVLabel.Position = UDim2.new(0.05, 0, 0, 305)
+FOVLabel.BackgroundTransparency = 1
+FOVLabel.TextColor3 = Color3.new(1,1,1)
+FOVLabel.Font = Enum.Font.Gotham
+FOVLabel.TextSize = 13
+FOVLabel.TextXAlignment = Enum.TextXAlignment.Left
+FOVLabel.Parent = MainFrame
+
+local FovMinus = Instance.new("TextButton")
+FovMinus.Text = "-"
+FovMinus.Size = UDim2.new(0, 30, 0, 25)
+FovMinus.Position = UDim2.new(0.65, 0, 0, 305)
+FovMinus.BackgroundColor3 = Color3.fromRGB(50,50,55)
+FovMinus.TextColor3 = Color3.new(1,1,1)
+FovMinus.Font = Enum.Font.GothamBold
+FovMinus.TextSize = 14
+FovMinus.Parent = MainFrame
+Instance.new("UICorner", FovMinus).CornerRadius = UDim.new(0,4)
+
+local FovPlus = Instance.new("TextButton")
+FovPlus.Text = "+"
+FovPlus.Size = UDim2.new(0, 30, 0, 25)
+FovPlus.Position = UDim2.new(0.82, 0, 0, 305)
+FovPlus.BackgroundColor3 = Color3.fromRGB(50,50,55)
+FovPlus.TextColor3 = Color3.new(1,1,1)
+FovPlus.Font = Enum.Font.GothamBold
+FovPlus.TextSize = 14
+FovPlus.Parent = MainFrame
+Instance.new("UICorner", FovPlus).CornerRadius = UDim.new(0,4)
+
+FovMinus.MouseButton1Click:Connect(function()
+    Config.Aimbot.FOV = math.max(30, Config.Aimbot.FOV - 10)
+    FOVLabel.Text = "FOV: " .. Config.Aimbot.FOV
+end)
+
+FovPlus.MouseButton1Click:Connect(function()
+    Config.Aimbot.FOV = math.min(400, Config.Aimbot.FOV + 10)
+    FOVLabel.Text = "FOV: " .. Config.Aimbot.FOV
+end)
+
+-- Cleanup on remove
+gui.AncestryChanged:Connect(function(_, parent)
+    if not parent then
+        for _, obj in pairs(ESPCache) do
+            if obj.Box then obj.Box:Remove() end
+            if obj.Name then obj.Name:Remove() end
+        end
+    end
+end)
+
+print("✅ Kanha Mobile v2.0 Loaded | ESP + Aimlock Active")
